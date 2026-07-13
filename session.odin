@@ -1,120 +1,186 @@
 package main
 
 import "core:encoding/base32"
+import "core:fmt"
 import "core:log"
 import "core:math/rand"
+import "core:os"
+import "core:strconv"
+import "core:strings"
 import "core:sync"
-import "core:time"
 
-import "vendor/http"
-import "vendor/http/nbio"
+import "store"
+import "web"
 
+// Session is the per-request user context.
+// In P1, it just holds the user_id from the DB; the actual todos live in SQLite.
 Session :: struct {
-	list:		   [dynamic]^Todo,
-	completed:	   int,
-	last_activity: time.Time,
+	user_id: i64,
 }
 
-Sessions :: struct {
-	entries:			map[string]^Session,
-	registered_cleaner: bool,
-	mu:					sync.RW_Mutex,
+// Session_Cache caches sessions by cookie id to avoid hitting the DB on every
+// request. Entries expire after SESSION_CACHE_TTL. This is optional —
+// session_get falls through to DB lookup on cache miss.
+Session_Cache_Entry :: struct {
+	session:  Session,
+	expires:  i64,  // unix timestamp
+}
+
+Session_Cache :: struct {
+	entries: map[string]Session_Cache_Entry,
+	mu:      sync.RW_Mutex,
 }
 
 @(private = "file")
-sessions: Sessions
+session_cache: Session_Cache
 
-/*
-Makes sure every request has a valid session.
-*/
-session_middleware :: proc(h: ^http.Handler, req: ^http.Request, res: ^http.Response) {
-	session := session_get(req)
-	if session != nil || req.url.path == "/health" {
-		h.next.?.handle(h.next.?, req, res)
+SESSION_CACHE_TTL :: 60  // seconds; short since we're a low-traffic app
+
+// session_middleware ensures every request has a valid session.
+// - /health is allowed without a session.
+// - If the cookie is present and valid, the session is loaded.
+// - If not, a new anonymous user + session is created, cookie set, and the
+//   browser is redirected to "/" so it re-issues with the cookie.
+session_middleware :: proc(req: ^web.Request, res: ^web.Response, next: web.Handler) {
+	if req.path == "/health" {
+		next(req, res)
 		return
 	}
 
-	// Creates a random string of characters to represent this session.
+	session, ok := session_get(req)
+	if ok {
+		req.user_ptr = session
+		next(req, res)
+		return
+	}
+
+	// For API routes without a session, let the handler return 401
+	// (it will check for a Bearer token, then 401 if none).
+	if strings.has_prefix(req.path, "/api/") || strings.has_prefix(req.path, "/mcp") {
+		next(req, res)
+		return
+	}
+
+	// For passkey login routes, no session needed.
+	if strings.has_prefix(req.path, "/passkey/login") {
+		next(req, res)
+		return
+	}
+
+	// For web routes: create a session and serve the page directly (no redirect).
+	// This avoids cookie-loss issues with reverse proxies like Cloudflare Tunnel.
+	// Inherit TG chat_id and webhook from env vars or existing user, so web-created
+	// todos also get reminders pushed to the same devices.
+	user_id, err := _create_user_with_inherited_settings()
+	if err != nil {
+		log.errorf("failed to create user: %v", err)
+		web.respond_text(res, web.S_500_INTERNAL_SERVER_ERROR, "internal error")
+		return
+	}
+
+	// Generate a random session id.
 	id: [16]byte
 	n := rand.read(id[:])
 	assert(n == 16)
 	sid := base32.encode(id[:])
 
-	session = new(Session)
-	session.last_activity = time.now()
-	{
-		sync.guard(&sessions.mu)
-		sessions.entries[sid] = session
-
-		if !sessions.registered_cleaner {
-			sessions.registered_cleaner = true
-			sessions_register_cleaner(res._conn.server)
-		}
+	err = store.create_session(store.DB, string(sid), user_id)
+	if err != nil {
+		log.errorf("failed to create session: %v", err)
+		web.respond_text(res, web.S_500_INTERNAL_SERVER_ERROR, "internal error")
+		return
 	}
 
-	append(&res.cookies, http.Cookie{name = "session", value = string(sid), path = "/"})
+	web.set_cookie(res, web.Cookie{
+		name = "session",
+		value = string(sid),
+		path = "/",
+		same_site = .Lax,
+	})
 
-	// Make the browser make the request again, this time with the session set.
-	// Probably not the greatest way of doing this lol.
-	http.headers_set_unsafe(&res.headers, "location", INDEX)
-	http.respond(res, http.Status.Found)
+	// Cache it and attach to the request, then continue to the handler.
+	s := Session{user_id = user_id}
+	_cache_put(string(sid), s)
+	session_ptr := new(Session, context.temp_allocator)
+	session_ptr^ = s
+	req.user_ptr = session_ptr
+	next(req, res)
 }
 
-/*
-Periodically checks for inactive sessions and deletes them.
-*/
-sessions_register_cleaner :: proc(s: ^http.Server) {
-	CLEAN_INTERVAL :: time.Hour
-	INACTIVE_TIME  :: time.Hour * 3
+// session_get retrieves the session from the request's cookie.
+// Checks the in-process cache first, then falls back to the DB.
+// Returns (session_ptr, true) on success, (nil, false) if no valid session.
+// The returned pointer is allocated on the temp allocator (valid for one request).
+session_get :: proc(req: ^web.Request) -> (^Session, bool) {
+	cookie, ok := web.cookies_get(req, "session")
+	if !ok do return nil, false
 
-	clean_sessions :: proc(s: rawptr, now_: Maybe(time.Time)) {
-		s := cast(^http.Server)s
-		nbio.timeout(&http.td.io, CLEAN_INTERVAL, s, clean_sessions)
-
-		now := now_.? or_else time.now()
-
-		sync.guard(&sessions.mu)
-		for sid, session in sessions.entries {
-			if time.diff(session.last_activity, now) < INACTIVE_TIME {
-				continue
-			}
-
-			log.infof("Deleting inactive session: %s", sid)
-
-			for todo in session.list {
-				delete(todo.title)
-				free(todo)
-			}
-
-			delete(session.list)
-			free(session)
-			delete_key(&sessions.entries, sid)
-			delete(sid)
-		}
+	// Cache lookup.
+	if s, ok := _cache_get(cookie); ok {
+		ptr := new(Session, context.temp_allocator)
+		ptr^ = s
+		return ptr, true
 	}
-	nbio.timeout(&http.td.io, CLEAN_INTERVAL, s, clean_sessions)
+
+	// DB lookup.
+	result, found := store.session_lookup(store.DB, cookie)
+	if !found do return nil, false
+
+	s := Session{user_id = result.user_id}
+	_cache_put(cookie, s)
+	ptr := new(Session, context.temp_allocator)
+	ptr^ = s
+	return ptr, true
 }
 
-/*
-Gets the session out of the request cookies.
-*/
-session_get :: proc(req: ^http.Request) -> ^Session {
-	session, ok := http.request_cookie_get(req, "session")
-	if !ok do return nil
+// === Cache helpers ===
 
-	sync.shared_guard(&sessions.mu)
-	s := sessions.entries[session]
-	if s != nil do s.last_activity = time.now()
-	return s
-}
+_cache_get :: proc(key: string) -> (Session, bool) {
+	guard := sync.shared_guard(&session_cache.mu)
+	entry, ok := session_cache.entries[key]
+	if !ok do return {}, false
 
-Item :: struct {
-	todo:  ^Todo,
-	index: int,
-}
-session_get_todo :: proc(session: ^Session, id: int) -> Maybe(Item) {
-	for todo, i in session.list {
-		if todo.id == id do return Item{todo, i}
+	// Check expiry using a rough time source (avoids time.now() per call).
+	if _now_unix() > entry.expires {
+		return {}, false
 	}
-	return nil
+	return entry.session, true
+}
+
+_cache_put :: proc(key: string, session: Session) {
+	guard := sync.guard(&session_cache.mu)
+	session_cache.entries[key] = Session_Cache_Entry{
+		session = session,
+		expires = _now_unix() + SESSION_CACHE_TTL,
+	}
+}
+
+_now_unix :: proc() -> i64 {
+	return store.now_unix()
+}
+
+// === Helpers used by handlers ===
+
+// _create_user_with_inherited_settings creates a new user, and if DEFAULT_TG_CHAT_ID
+// and DEFAULT_WEBHOOK_URL env vars are set, copies them so web-created todos also
+// get TG + Bark push notifications.
+_create_user_with_inherited_settings :: proc() -> (i64, store.DB_Error) {
+	uid, err := store.create_user(store.DB, "")
+	if err != nil do return 0, err
+
+	// Try env vars first. Only set webhook for anonymous web users
+	// (tg_chat_id has a unique constraint — can't share Michael's).
+	webhook := os.lookup_env_alloc("DEFAULT_WEBHOOK_URL", context.allocator) or_else ""
+	if len(webhook) > 0 {
+		store.set_user_webhook(store.DB, uid, webhook)
+	}
+
+	return uid, nil
+}
+
+// session_of_req extracts the Session from the request (set by session_middleware).
+// Returns nil if no session is attached (shouldn't happen for non-/health routes).
+session_of_req :: proc(req: ^web.Request) -> ^Session {
+	if req.user_ptr == nil do return nil
+	return cast(^Session)req.user_ptr
 }
