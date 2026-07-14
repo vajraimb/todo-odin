@@ -187,6 +187,19 @@ _mcp_tools_list :: proc(res: ^web.Response, id: json.Value, user_id: i64) {
       "name": "get_web_login_link",
       "description": "Generate a web login link for the current user. Returns a URL that links their web browser session to their account.",
       "inputSchema": {"type": "object", "properties": {}}
+    },
+    {
+      "name": "share_reminder",
+      "description": "Share a todo's reminder to another person's Bark push URL. When the reminder fires, both you and the recipient get a Bark push notification on their iPhone.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "todo_id": {"type": "integer", "description": "The todo ID that has a reminder"},
+          "bark_url": {"type": "string", "description": "The recipient's Bark URL, e.g. https://api.day.app/their-key"},
+          "label": {"type": "string", "description": "Optional label for the recipient, e.g. '儿子'"}
+        },
+        "required": ["todo_id", "bark_url"]
+      }
     }
   ]
 }`
@@ -235,6 +248,8 @@ _mcp_tools_call :: proc(res: ^web.Response, id: json.Value, params: Maybe(json.V
 		_mcp_tool_list_reminders(res, id, user_id)
 	case "get_web_login_link":
 		_mcp_tool_get_web_login_link(res, id, user_id)
+	case "share_reminder":
+		_mcp_tool_share_reminder(res, id, user_id, call_params.arguments)
 	case:
 		_mcp_error(res, id, -32602, fmt.tprintf("unknown tool: {}", call_params.name))
 	}
@@ -423,6 +438,52 @@ _mcp_tool_get_web_login_link :: proc(res: ^web.Response, id: json.Value, user_id
 	_mcp_tool_result(res, id, MCP_Web_Link{url = login_url})
 }
 
+_mcp_tool_share_reminder :: proc(res: ^web.Response, id: json.Value, user_id: i64, args: map[string]json.Value) {
+	todo_id_val, ok := args["todo_id"]
+	if !ok {
+		_mcp_error(res, id, -32602, "missing 'todo_id'")
+		return
+	}
+	todo_id, idok := _json_to_i64(todo_id_val)
+	if !idok {
+		_mcp_error(res, id, -32602, "invalid todo_id")
+		return
+	}
+
+	bark_val, bok := args["bark_url"]
+	if !bok {
+		_mcp_error(res, id, -32602, "missing 'bark_url'")
+		return
+	}
+	bark_url, buk := bark_val.(string)
+	if !buk || len(bark_url) == 0 {
+		_mcp_error(res, id, -32602, "invalid bark_url")
+		return
+	}
+
+	label := ""
+	if lv, lok := args["label"]; lok {
+		if ls, lsok := lv.(string); lsok {
+			label = ls
+		}
+	}
+
+	// Find the reminder for this todo.
+	reminder_id, found := store.find_reminder_by_todo(store.DB, user_id, todo_id)
+	if !found {
+		_mcp_error(res, id, -32602, fmt.tprintf("no active reminder for todo {}", todo_id))
+		return
+	}
+
+	err := store.add_reminder_recipient(store.DB, reminder_id, bark_url, label)
+	if err != nil {
+		_mcp_error(res, id, -32603, "failed to add recipient")
+		return
+	}
+
+	_mcp_tool_result(res, id, MCP_Share_Result{status = "ok", todo_id = todo_id, bark_url = bark_url, label = label})
+}
+
 // MCP helper types
 MCP_Status :: struct {
 	status: string `json:"status"`,
@@ -437,6 +498,13 @@ MCP_Reminder_Item :: struct {
 
 MCP_Web_Link :: struct {
 	url: string `json:"login_url"`,
+}
+
+MCP_Share_Result :: struct {
+	status:   string `json:"status"`,
+	todo_id:  i64    `json:"todo_id"`,
+	bark_url: string `json:"bark_url"`,
+	label:    string `json:"label"`,
 }
 
 // === MCP response helpers ===
