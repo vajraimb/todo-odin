@@ -290,24 +290,23 @@ _handle_add :: proc(chat_id: i64, user_id: i64, title: string) {
 }
 
 _handle_list :: proc(chat_id: i64, user_id: i64) {
-	rows, err := store.list_todos(store.DB, user_id, .All)
+	rows, err := store.list_todos(store.DB, user_id, .Active)
 	if err != nil {
 		send_message(chat_id, "Failed to list todos.")
 		return
 	}
 
 	if len(rows) == 0 {
-		send_message(chat_id, "No todos yet. Send a message to create one!")
+		send_message(chat_id, "No active todos! All done 🎉")
 		return
 	}
 
 	sb := strings.builder_make(context.temp_allocator)
 	defer strings.builder_destroy(&sb)
 
-	strings.write_string(&sb, "Your todos:\n")
+	strings.write_string(&sb, "Active todos:\n")
 	for row in rows {
-		mark := "○" if !row.completed else "✓"
-		strings.write_string(&sb, fmt.tprintf("\n{} #{} {}", mark, row.id, row.title))
+		strings.write_string(&sb, fmt.tprintf("\n○ #{} {}", row.id, row.title))
 	}
 
 	send_message(chat_id, strings.to_string(sb))
