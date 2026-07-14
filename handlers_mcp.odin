@@ -124,7 +124,7 @@ _mcp_tools_list :: proc(res: ^web.Response, id: json.Value, user_id: i64) {
       "inputSchema": {
         "type": "object",
         "properties": {
-          "filter": {"type": "string", "enum": ["all", "active", "completed"], "default": "all"}
+          "filter": {"type": "string", "enum": ["active", "all", "completed"], "default": "active"}
         }
       }
     },
