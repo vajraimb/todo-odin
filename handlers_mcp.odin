@@ -124,7 +124,7 @@ _mcp_tools_list :: proc(res: ^web.Response, id: json.Value, user_id: i64) {
       "inputSchema": {
         "type": "object",
         "properties": {
-          "filter": {"type": "string", "enum": ["active", "all", "completed"], "default": "active"}
+          "filter": {"type": "string", "enum": ["active", "completed"], "default": "active", "description": "Which todos to show. Default: active (unfinished only)."}
         }
       }
     },
