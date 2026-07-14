@@ -44,9 +44,36 @@ MCP_Tool :: struct {
 
 // mcp_handle processes a single MCP JSON-RPC request.
 mcp_handle :: proc(req: ^web.Request, res: ^web.Response) {
-	// Auth: require session or token.
-	session := _api_require_session(req, res)
-	if session == nil do return
+	// Auth: session cookie, Bearer token, OR ?token= query param (for MCP clients without header support).
+	session := session_of_req(req)
+	if session == nil {
+		// Try Bearer token
+		auth_header, has_auth := web.headers_get(req.headers[:], "authorization")
+		if has_auth && strings.has_prefix(auth_header, "Bearer ") {
+			token := strings.trim_prefix(auth_header, "Bearer ")
+			if uid, found := store.lookup_api_token(store.DB, token); found {
+				s := new(Session, context.temp_allocator)
+				s.user_id = uid
+				req.user_ptr = s
+				session = s
+			}
+		}
+	}
+	// Try query param ?token=XXX
+	if session == nil {
+		if token, ok := _query_param(req.query, "token"); ok && len(token) > 0 {
+			if uid, found := store.lookup_api_token(store.DB, token); found {
+				s := new(Session, context.temp_allocator)
+				s.user_id = uid
+				req.user_ptr = s
+				session = s
+			}
+		}
+	}
+	if session == nil {
+		_api_error(res, web.S_401_UNAUTHORIZED, "unauthorized")
+		return
+	}
 
 	if len(req.body) == 0 {
 		_mcp_error(res, 0, -32600, "invalid request: empty body")
