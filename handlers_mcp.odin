@@ -297,10 +297,25 @@ _mcp_tool_create_todo :: proc(res: ^web.Response, id: json.Value, user_id: i64, 
 	parsed_title := title
 	parsed_remind: Maybe(string) = nil
 	if ai.configured() {
-		now := time.now()
-		year, month, day := time.date(now)
-		hour, minute, second := time.clock(now)
-		now_iso := fmt.tprintf("{}-{:02}-{:02}T{:02}:{:02}:{:02}", year, int(month), day, hour, minute, second)
+		// Build local-time context for the LLM (same as TG bot).
+		offset_hours: i64 = 8
+		if s, ok := os.lookup_env_alloc("TZ_OFFSET_HOURS", context.temp_allocator); ok {
+			if n, pok := strconv.parse_i64(s, 10); pok {
+				offset_hours = n
+			}
+		}
+		now_unix := time.time_to_unix(time.now())
+		local_unix := now_unix + offset_hours * 3600
+		local_time := time.unix(local_unix, 0)
+		year, month, day := time.date(local_time)
+		hour, minute, _ := time.clock(local_time)
+		wd_names := []string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+		tomorrow := time.unix(local_unix + 86400, 0)
+		t_y, t_m, t_d := time.date(tomorrow)
+		now_iso := fmt.tprintf("{}-{:02}-{:02} {:02}:{:02} ({})\nToday is {}-{:02}-{:02}.\nTomorrow is {}-{:02}-{:02}.",
+			year, int(month), day, hour, minute, wd_names[int(time.weekday(local_time))],
+			year, int(month), day, t_y, int(t_m), t_d)
+
 		parsed, ok := ai.parse_todo(title, now_iso)
 		if ok && len(parsed.title) > 0 {
 			parsed_title = parsed.title
@@ -316,7 +331,22 @@ _mcp_tool_create_todo :: proc(res: ^web.Response, id: json.Value, user_id: i64, 
 
 	if remind_iso, has_reminder := parsed_remind.?; has_reminder {
 		if remind_unix, ok := store.parse_iso_to_unix(remind_iso); ok {
-			store.create_reminder(store.DB, todo_id, user_id, remind_unix)
+			// LLM returns local time; subtract offset to get UTC.
+			offset_hours: i64 = 8
+			if s, ok := os.lookup_env_alloc("TZ_OFFSET_HOURS", context.temp_allocator); ok {
+				if n, pok := strconv.parse_i64(s, 10); pok {
+					offset_hours = n
+				}
+			}
+			remind_unix -= offset_hours * 3600
+
+			if remind_unix <= store.now_unix() {
+				// Past — skip reminder.
+			} else if remind_unix > store.now_unix() + 365 * 86400 {
+				// Too far — likely LLM error, skip.
+			} else {
+				store.create_reminder(store.DB, todo_id, user_id, remind_unix)
+			}
 		}
 	}
 
