@@ -151,6 +151,16 @@ CREATE TABLE IF NOT EXISTS login_tokens (
     created_at INTEGER NOT NULL
 );
 `},
+	{7, `
+CREATE TABLE IF NOT EXISTS reminder_recipients (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reminder_id INTEGER NOT NULL REFERENCES reminders(id) ON DELETE CASCADE,
+    webhook_url TEXT NOT NULL,
+    label TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recipients_reminder ON reminder_recipients(reminder_id);
+`},
 }
 
 migrate :: proc(db: Database) -> DB_Error {

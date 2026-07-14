@@ -155,3 +155,77 @@ ORDER BY r.remind_at ASC;
 	}
 	return out[:], nil
 }
+
+// === Reminder recipients (shared Bark push) ===
+
+// Recipient is an additional webhook URL attached to a reminder.
+Recipient :: struct {
+	id:          i64,
+	reminder_id: i64,
+	webhook_url: string,
+	label:       string,
+}
+
+// add_reminder_recipient adds a Bark webhook URL to a reminder.
+// Returns error if the URL is already added.
+add_reminder_recipient :: proc(db: Database, reminder_id: i64, webhook_url: string, label: string) -> DB_Error {
+	stmt, rc := prepare(db, "INSERT INTO reminder_recipients (reminder_id, webhook_url, label, created_at) VALUES (?, ?, ?, ?);")
+	if rc != OK {
+		return fmt.tprintf("add_recipient prepare failed: %s", err_str(db))
+	}
+	defer finalize_safe(stmt)
+	_ = bind_int64(stmt, 1, reminder_id)
+	_ = bind_string(stmt, 2, webhook_url)
+	if len(label) > 0 {
+		_ = bind_string(stmt, 3, label)
+	} else {
+		_ = bind_null(stmt, 3)
+	}
+	_ = bind_int64(stmt, 4, now_unix())
+	rc = step(stmt)
+	if rc != DONE {
+		return fmt.tprintf("add_recipient failed (rc=%d): %s", rc, err_str(db))
+	}
+	return nil
+}
+
+// list_reminder_recipients returns all additional webhook URLs for a reminder.
+list_reminder_recipients :: proc(db: Database, reminder_id: i64) -> []Recipient {
+	stmt, rc := prepare(db, "SELECT id, reminder_id, webhook_url, COALESCE(label, '') FROM reminder_recipients WHERE reminder_id = ?;")
+	if rc != OK do return {}
+	defer finalize_safe(stmt)
+	_ = bind_int64(stmt, 1, reminder_id)
+	out := make([dynamic]Recipient, 0, 4, context.temp_allocator)
+	for step_row(stmt) {
+		append(&out, Recipient{
+			id = column_int64(stmt, 0),
+			reminder_id = column_int64(stmt, 1),
+			webhook_url = column_string(stmt, 2),
+			label = column_string(stmt, 3),
+		})
+	}
+	return out[:]
+}
+
+// find_reminder_by_todo returns the reminder_id for a todo (first unfired one).
+find_reminder_by_todo :: proc(db: Database, user_id: i64, todo_id: i64) -> (i64, bool) {
+	stmt, rc := prepare(db, "SELECT id FROM reminders WHERE todo_id = ? AND user_id = ? AND fired = 0 ORDER BY id LIMIT 1;")
+	if rc != OK do return 0, false
+	defer finalize_safe(stmt)
+	_ = bind_int64(stmt, 1, todo_id)
+	_ = bind_int64(stmt, 2, user_id)
+	if !step_row(stmt) do return 0, false
+	return column_int64(stmt, 0), true
+}
+
+// remove_reminder_recipient removes a recipient by URL.
+remove_reminder_recipient :: proc(db: Database, reminder_id: i64, webhook_url: string) -> bool {
+	stmt, rc := prepare(db, "DELETE FROM reminder_recipients WHERE reminder_id = ? AND webhook_url = ?;")
+	if rc != OK do return false
+	defer finalize_safe(stmt)
+	_ = bind_int64(stmt, 1, reminder_id)
+	_ = bind_string(stmt, 2, webhook_url)
+	rc = step(stmt)
+	if rc != DONE do return false
+	return changes(db) > 0
+}

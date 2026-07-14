@@ -51,7 +51,7 @@ _fire_due_reminders :: proc() {
 	}
 }
 
-// _fire_one dispatches a single reminder via TG message + webhook.
+// _fire_one dispatches a single reminder via TG message + webhook + recipients.
 _fire_one :: proc(r: store.Due_Reminder) {
 	success := true
 
@@ -64,23 +64,39 @@ _fire_one :: proc(r: store.Due_Reminder) {
 		}
 	}
 
-	// 2. Call webhook (if user has one configured).
+	// 2. Call owner's webhook (Bark).
 	if len(r.webhook_url) > 0 {
 		if !_call_webhook(r.webhook_url, r.title, r.remind_at) {
 			log.warnf("scheduler: webhook failed for reminder {}", r.reminder_id)
-			// Don't mark as failure — TG message might have succeeded.
-			// Webhook failures are less critical.
 		}
 	}
 
-	// 3. Mark as fired (or increment retry on failure).
+	// 3. Call additional recipients' webhooks (shared Bark push).
+	recipients := store.list_reminder_recipients(store.DB, r.reminder_id)
+	for rcpt in recipients {
+		label_msg := r.title
+		if len(rcpt.label) > 0 {
+			label_msg = fmt.tprintf("{} ({})", r.title, rcpt.label)
+		}
+		if _call_webhook(rcpt.webhook_url, label_msg, r.remind_at) {
+			log.infof("scheduler: pushed to recipient {}", rcpt.webhook_url[:min(len(rcpt.webhook_url), 40)])
+		} else {
+			log.warnf("scheduler: recipient webhook failed: {}", rcpt.webhook_url[:min(len(rcpt.webhook_url), 40)])
+		}
+	}
+
+	// 4. Mark as fired.
 	if success {
 		store.mark_reminder_fired(store.DB, r.reminder_id)
 		log.infof("scheduler: fired reminder {} (todo #{})", r.reminder_id, r.todo_id)
 	} else {
 		store.mark_reminder_failed(store.DB, r.reminder_id)
-		log.warnf("scheduler: marked reminder {} as failed", r.reminder_id)
 	}
+}
+
+min :: proc(a, b: int) -> int {
+	if a < b do return a
+	return b
 }
 
 // _call_webhook POSTs a JSON payload to the user's webhook URL.

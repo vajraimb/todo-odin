@@ -138,6 +138,10 @@ _handle_update :: proc(update: TG_Update) {
 		_handle_reminders(chat_id, user_id)
 	case "/web":
 		_handle_web_login(chat_id, user_id)
+	case "/share":
+		_handle_share(chat_id, user_id, args)
+	case "/unshare":
+		_handle_unshare(chat_id, user_id, args)
 	case:
 		send_message(chat_id, fmt.tprintf("Unknown command: {}\nUse /help for available commands.", cmd))
 	}
@@ -148,20 +152,104 @@ _handle_update :: proc(update: TG_Update) {
 _handle_help :: proc(chat_id: i64) {
 	help := `Todo Bot Commands:
 
-/add <text> — create a new todo (AI parses natural language)
+/add <text> — create todo (AI parses natural language)
 /list — show all todos
-/done <id> — mark todo as completed
-/undone <id> — mark todo as active
-/delete <id> — delete a todo
-/count — show todo counts
+/done <id> — mark completed
+/undone <id> — mark active
+/delete <id> — delete todo
+/count — show counts
 /reminders — show upcoming reminders
-/webhook <url> — set webhook URL for iOS push notifications
-/web — get a login link to access your todos on the web
+/webhook <url> — set your Bark URL
+/share <id> <bark_url> — share reminder to another Bark
+/unshare <id> <bark_url> — remove shared recipient
+/web — get web login link
 
-You can also send any text (without /) to quickly create a todo.
-Voice messages are transcribed and parsed with AI.`
+Send text or voice to create todos.`
 
 	send_message(chat_id, help)
+}
+
+// _handle_share adds an additional Bark webhook to a reminder.
+// Usage: /share <todo_id> https://api.day.app/child_key
+// Optional label: /share <todo_id> https://api.day.app/key 儿子
+_handle_share :: proc(chat_id: i64, user_id: i64, args: string) {
+	// Parse: <todo_id> <url> [label...]
+	parts := strings.fields(args)
+	if len(parts) < 2 {
+		send_message(chat_id, "Usage: /share <todo_id> <bark_url> [label]\n\nExample:\n/share 5 https://api.day.app/xxxx 儿子")
+		return
+	}
+
+	todo_id, ok := strconv.parse_i64(parts[0], 10)
+	if !ok {
+		send_message(chat_id, "Invalid todo ID.")
+		return
+	}
+
+	webhook_url := parts[1]
+	if !strings.has_prefix(webhook_url, "http") {
+		send_message(chat_id, "URL must start with http:// or https://")
+		return
+	}
+
+	label := ""
+	if len(parts) > 2 {
+		// Join remaining parts as label
+		lbl := make([dynamic]u8, 0, 64, context.temp_allocator)
+		for i in 2..<len(parts) {
+			if i > 2 do append(&lbl, ' ')
+			append(&lbl, ..transmute([]u8)parts[i])
+		}
+		label = transmute(string)(lbl[:])
+	}
+
+	// Find the reminder for this todo.
+	reminder_id, found := store.find_reminder_by_todo(store.DB, user_id, todo_id)
+	if !found {
+		send_message(chat_id, fmt.tprintf("No active reminder for todo #{}. Create one with /add first.", todo_id))
+		return
+	}
+
+	err := store.add_reminder_recipient(store.DB, reminder_id, webhook_url, label)
+	if err != nil {
+		send_message(chat_id, fmt.tprintf("Failed to add: {}", err))
+		return
+	}
+
+	display := webhook_url
+	if len(label) > 0 {
+		display = fmt.tprintf("{} ({})", label, webhook_url)
+	}
+	send_message(chat_id, fmt.tprintf("✅ Shared reminder for #{} to:\n{}\n\nThey'll get a Bark push when it fires.", todo_id, display))
+}
+
+// _handle_unshare removes a shared Bark webhook from a reminder.
+_handle_unshare :: proc(chat_id: i64, user_id: i64, args: string) {
+	parts := strings.fields(args)
+	if len(parts) < 2 {
+		send_message(chat_id, "Usage: /unshare <todo_id> <bark_url>")
+		return
+	}
+
+	todo_id, ok := strconv.parse_i64(parts[0], 10)
+	if !ok {
+		send_message(chat_id, "Invalid todo ID.")
+		return
+	}
+
+	webhook_url := parts[1]
+	reminder_id, found := store.find_reminder_by_todo(store.DB, user_id, todo_id)
+	if !found {
+		send_message(chat_id, fmt.tprintf("No reminder for todo #{}.", todo_id))
+		return
+	}
+
+	removed := store.remove_reminder_recipient(store.DB, reminder_id, webhook_url)
+	if removed {
+		send_message(chat_id, fmt.tprintf("Removed recipient from todo #{}.", todo_id))
+	} else {
+		send_message(chat_id, "Recipient not found.")
+	}
 }
 
 // _handle_web_login generates a one-time login link and sends it via TG.
