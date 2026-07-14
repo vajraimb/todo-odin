@@ -117,6 +117,16 @@ _register_routes :: proc(server: ^web.Server) {
 	// Web login via TG magic link
 	web.route_get(r,    "/login",                  handler_web_login)
 
+	// QR code display (for wechat-ai login)
+	web.route_get(r,    "/qr", proc(req: ^web.Request, res: ^web.Response) {
+		data, err := os.read_entire_file_from_path("/tmp/qr.html", context.temp_allocator)
+		if err != nil || len(data) == 0 {
+			web.respond_text(res, web.S_404_NOT_FOUND, "QR not available. Run wechat-ai first.")
+			return
+		}
+		web.respond_html(res, web.S_200_OK, string(data))
+	})
+
 	// === Static files (embedded via #load) ===
 	STATIC_CACHE_CONTROL :: "public, max-age=604800"
 
