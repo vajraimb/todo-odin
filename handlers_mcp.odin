@@ -3,6 +3,7 @@ package main
 import "core:encoding/json"
 import "core:fmt"
 import "core:log"
+import "core:os"
 import "core:strconv"
 import "core:strings"
 import "core:time"
@@ -181,6 +182,11 @@ _mcp_tools_list :: proc(res: ^web.Response, id: json.Value, user_id: i64) {
       "name": "list_reminders",
       "description": "List upcoming (unfired) reminders.",
       "inputSchema": {"type": "object", "properties": {}}
+    },
+    {
+      "name": "get_web_login_link",
+      "description": "Generate a web login link for the current user. Returns a URL that links their web browser session to their account.",
+      "inputSchema": {"type": "object", "properties": {}}
     }
   ]
 }`
@@ -227,6 +233,8 @@ _mcp_tools_call :: proc(res: ^web.Response, id: json.Value, params: Maybe(json.V
 		_mcp_tool_clear_completed(res, id, user_id)
 	case "list_reminders":
 		_mcp_tool_list_reminders(res, id, user_id)
+	case "get_web_login_link":
+		_mcp_tool_get_web_login_link(res, id, user_id)
 	case:
 		_mcp_error(res, id, -32602, fmt.tprintf("unknown tool: {}", call_params.name))
 	}
@@ -407,6 +415,14 @@ _mcp_tool_list_reminders :: proc(res: ^web.Response, id: json.Value, user_id: i6
 	_mcp_tool_result(res, id, items)
 }
 
+_mcp_tool_get_web_login_link :: proc(res: ^web.Response, id: json.Value, user_id: i64) {
+	token := store.generate_login_token(user_id)
+	public_url := os.lookup_env_alloc("PUBLIC_URL", context.temp_allocator) or_else "https://todo.vajraodin.ai"
+	login_url := fmt.tprintf("{}/login?token={}", public_url, token)
+
+	_mcp_tool_result(res, id, MCP_Web_Link{url = login_url})
+}
+
 // MCP helper types
 MCP_Status :: struct {
 	status: string `json:"status"`,
@@ -417,6 +433,10 @@ MCP_Reminder_Item :: struct {
 	todo_id:     i64   `json:"todo_id"`,
 	title:       string `json:"title"`,
 	remind_at:   i64   `json:"remind_at"`,
+}
+
+MCP_Web_Link :: struct {
+	url: string `json:"login_url"`,
 }
 
 // === MCP response helpers ===
