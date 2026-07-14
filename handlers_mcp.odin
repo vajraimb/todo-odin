@@ -258,12 +258,13 @@ _mcp_tools_call :: proc(res: ^web.Response, id: json.Value, params: Maybe(json.V
 // === Tool implementations ===
 
 _mcp_tool_list_todos :: proc(res: ^web.Response, id: json.Value, user_id: i64, args: map[string]json.Value) {
-	filter := store.Todo_Filter.All
+	filter := store.Todo_Filter.Active
 	if f, ok := args["filter"]; ok {
 		if fs, fok := f.(string); fok {
 			switch fs {
-			case "active":    filter = .Active
+			case "all":       filter = .All
 			case "completed": filter = .Completed
+			case "active":    filter = .Active
 			}
 		}
 	}
