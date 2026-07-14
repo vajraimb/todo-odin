@@ -111,8 +111,37 @@ render_index :: proc(l: List) -> string {
 	<head>
 		<meta charset="utf-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1">
-		<title>HTMX + Odin • TodoMVC</title>
+		<title>Todo</title>
 		<link rel="stylesheet" href="/todomvc-app-css@2.4.2-index.css">
+		<style>
+			.todo-list li .select-box {
+				position: absolute; top: 0; left: 8px;
+				height: 40px; width: 20px;
+				text-align: center; line-height: 40px;
+				opacity: 0; transition: opacity 0.1s;
+			}
+			.todo-list li:hover .select-box { opacity: 0.6; }
+			.todo-list li .select-box input { margin: 0; }
+			.todo-list li.selected { background: #e8f0fe; }
+			.todo-list li .destroy { opacity: 0.3 !important; transition: opacity 0.1s; }
+			.todo-list li:hover .destroy { opacity: 1 !important; }
+			.bulk-bar {
+				display: none; padding: 8px 15px; background: #f0f4ff;
+				border-top: 1px solid #d0d8e8; font-size: 13px;
+				align-items: center; gap: 12px;
+			}
+			.bulk-bar.visible { display: flex; }
+			.bulk-bar button {
+				padding: 4px 12px; border: 1px solid #ccc; border-radius: 3px;
+				background: #fff; cursor: pointer; font-size: 12px;
+			}
+			.bulk-bar button:hover { background: #e8e8e8; }
+			.bulk-bar button.danger { color: #d33; border-color: #d33; }
+			.bulk-bar button.danger:hover { background: #fee; }
+			.toggle-all-label { font-size: 12px; color: #888; cursor: pointer; }
+			.header h1 { font-size: 60px; }
+			.new-todo { font-size: 18px; }
+		</style>
 	</head>
 	<body>
 		<section class="todoapp">
@@ -133,11 +162,48 @@ render_index :: proc(l: List) -> string {
 		</section>
 
 		<footer class="info">
-			<p>Double-click to edit a todo</p>
-			<p>Part of <a href="https://todomvc.com">TodoMVC</a></p>
+			<p>Double-click to edit · Check the box to multi-select</p>
 		</footer>
 
 		<script src="/htmx@1.9.5.min.js"></script>
+		<script>
+		// Multi-select logic
+		function updateBulkBar() {
+			const checked = document.querySelectorAll('.select-box input:checked');
+			const bar = document.getElementById('bulk-bar');
+			if (!bar) return;
+			if (checked.length > 0) {
+				bar.classList.add('visible');
+				document.getElementById('bulk-count').textContent = checked.length + ' selected';
+			} else {
+				bar.classList.remove('visible');
+			}
+			// Highlight selected rows
+			document.querySelectorAll('.todo-list li').forEach(li => {
+				const cb = li.querySelector('.select-box input');
+				if (cb) li.classList.toggle('selected', cb.checked);
+			});
+		}
+		function bulkDelete() {
+			const checked = document.querySelectorAll('.select-box input:checked');
+			if (!confirm('Delete ' + checked.length + ' todo(s)?')) return;
+			const ids = Array.from(checked).map(cb => cb.dataset.id);
+			let pending = ids.length;
+			ids.forEach(id => {
+				fetch('/todos/' + id, {method: 'DELETE'}).then(() => {
+					pending--;
+					if (pending === 0) location.reload();
+				});
+			});
+		}
+		function selectAll() {
+			const boxes = document.querySelectorAll('.select-box input');
+			const allChecked = Array.from(boxes).every(b => b.checked);
+			boxes.forEach(b => b.checked = !allChecked);
+			updateBulkBar();
+		}
+		document.addEventListener('click', updateBulkBar);
+		</script>
 	</body>
 </html>`)
 
@@ -152,12 +218,11 @@ render_list :: proc(sb: ^strings.Builder, l: List) {
 			hx-target="#todos"
 			hx-swap="outerHTML"
 			hx-post="/todos/toggle"
-
 			class="toggle-all"
 			type="checkbox"
 			id="toggle-all"
 		>
-		<label for="toggle-all">Mark all as complete</label>
+		<label for="toggle-all" class="toggle-all-label">全部完成/取消</label>
 		<ul class="todo-list">
 `)
 	for todo in l.todos {
@@ -165,6 +230,11 @@ render_list :: proc(sb: ^strings.Builder, l: List) {
 	}
 	strings.write_string(sb, `		</ul>
 	</section>
+
+	<div class="bulk-bar" id="bulk-bar">
+		<span id="bulk-count">0 selected</span>
+		<button onclick="bulkDelete()" class="danger">Delete selected</button>
+	</div>
 
 	<footer class="footer">
 `)
@@ -203,6 +273,9 @@ render_filter_link :: proc(sb: ^strings.Builder, label: string, href: string, pa
 render_todo :: proc(sb: ^strings.Builder, todo: ^Todo) {
 	strings.write_string(sb, fmt.tprintf(
 		`<li id="todo-{}"{}>
+	<div class="select-box">
+		<input type="checkbox" data-id="{}" onchange="updateBulkBar()">
+	</div>
 	<form
 		hx-patch="/todos/{}"
 		hx-target="#todo-{}"
@@ -227,8 +300,10 @@ render_todo :: proc(sb: ^strings.Builder, todo: ^Todo) {
 		<input class="edit" name="title" value="{}">
 	</form>
 </li>`,
+
 		todo.id,
 		todo.completed ? " class=\"completed\"" : "",
+		todo.id,
 		todo.id,
 		todo.id,
 		todo.id,
