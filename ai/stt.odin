@@ -72,16 +72,16 @@ transcribe_gemini :: proc(file_path: string) -> (string, bool) {
 	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 	desc := os.Process_Desc{
 		command = []string{
-			"curl", "-s", "--max-time", "30",
+			"curl", "-s", "--max-time", "60",
 			"-X", "POST",
 			"-H", "Content-Type: application/json",
 			"-d", fmt.tprintf("@{}", req_path),
 			fmt.tprintf("{}?key={}", url, gemini_key),
 		},
 	}
-	state, stdout, _, exec_err := os.process_exec(desc, context.temp_allocator)
+	state, stdout, stderr, exec_err := os.process_exec(desc, context.temp_allocator)
 	if exec_err != nil || !state.exited || state.exit_code != 0 {
-		log.errorf("STT: Gemini API call failed")
+		log.errorf("STT: Gemini API failed (exit={}, stderr={})", state.exit_code, string(stderr)[:min(len(stderr), 100)])
 		return "", false
 	}
 
