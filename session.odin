@@ -15,7 +15,8 @@ import "web"
 // Session is the per-request user context.
 // In P1, it just holds the user_id from the DB; the actual todos live in SQLite.
 Session :: struct {
-	user_id: i64,
+	user_id:   i64,
+	session_id: string,
 }
 
 // Session_Cache caches sessions by cookie id to avoid hitting the DB on every
@@ -54,15 +55,18 @@ session_middleware :: proc(req: ^web.Request, res: ^web.Response, next: web.Hand
 		return
 	}
 
-	// For API routes without a session, let the handler return 401
-	// (it will check for a Bearer token, then 401 if none).
 	if strings.has_prefix(req.path, "/api/") || strings.has_prefix(req.path, "/mcp") {
 		next(req, res)
 		return
 	}
 
-	// For passkey login routes, no session needed.
 	if strings.has_prefix(req.path, "/passkey/login") {
+		next(req, res)
+		return
+	}
+
+	// For /login: let the handler manage session creation itself
+	if req.path == "/login" {
 		next(req, res)
 		return
 	}
@@ -99,7 +103,7 @@ session_middleware :: proc(req: ^web.Request, res: ^web.Response, next: web.Hand
 	})
 
 	// Cache it and attach to the request, then continue to the handler.
-	s := Session{user_id = user_id}
+	s := Session{user_id = user_id, session_id = string(sid)}
 	_cache_put(string(sid), s)
 	session_ptr := new(Session, context.temp_allocator)
 	session_ptr^ = s

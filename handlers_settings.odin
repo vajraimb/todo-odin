@@ -1,7 +1,9 @@
 package main
 
+import "core:encoding/base32"
 import "core:fmt"
 import "core:log"
+import "core:math/rand"
 import "core:os"
 import "core:strconv"
 import "core:strings"
@@ -63,47 +65,46 @@ handler_save_webhook :: proc(req: ^web.Request, res: ^web.Response) {
 	web.respond_redirect(res, web.S_302_FOUND, "/settings")
 }
 
-// handler_web_login handles the /login?token=XXX magic link from TG.
-// Verifies the token and links the current web session to the TG user.
+// handler_web_login handles the /login?token=XXX magic link.
+// Creates or relinks a web session to the verified TG user.
 handler_web_login :: proc(req: ^web.Request, res: ^web.Response) {
-	// Need a session cookie to link.
-	session := session_of_req(req)
-	if session == nil {
-		// No session — redirect to home to create one, then user retries the link.
+	token, ok := _query_param(req.query, "token")
+	if !ok || len(token) == 0 {
+		web.respond_text(res, web.S_400_BAD_REQUEST, "Missing login token.")
+		return
+	}
+
+	user_id, valid := tg.consume_login_token(token)
+	if !valid {
+		web.respond_text(res, web.S_401_UNAUTHORIZED, "Invalid or expired token. Send /web to get a new link.")
+		return
+	}
+
+	// If user already has a session cookie, relink it.
+	cookie, cok := web.cookies_get(req, "session")
+	if cok {
+		store.link_session_to_user(store.DB, cookie, user_id)
+		_cache_put(cookie, Session{user_id = user_id, session_id = cookie})
+		log.infof("web login: relinked session to user {}", user_id)
 		web.respond_redirect(res, web.S_302_FOUND, "/")
 		return
 	}
 
-	// Get the token from query string.
-	token, ok := _query_param(req.query, "token")
-	if !ok || len(token) == 0 {
-		web.respond_text(res, web.S_400_BAD_REQUEST, fmt.tprintf("Missing token. query=%q", req.query))
-		return
-	}
+	// No cookie yet — create a new session for the target user directly.
+	id_bytes: [16]byte
+	_ = rand.read(id_bytes[:])
+	new_sid := string(base32.encode(id_bytes[:]))
+	store.create_session(store.DB, new_sid, user_id)
 
-	// Consume the token (one-time use).
-	user_id, valid := tg.consume_login_token(token)
-	if !valid {
-		// Show debug info
-		now := store.now_unix()
-		web.respond_text(res, web.S_401_UNAUTHORIZED, fmt.tprintf(
-			"Login failed. token={} user_id={} valid={} now={}",
-			token, user_id, valid, now,
-		))
-		return
-	}
+	web.set_cookie(res, web.Cookie{
+		name = "session",
+		value = new_sid,
+		path = "/",
+		same_site = .Lax,
+	})
 
-	// Link this web session to the TG user.
-	cookie, cok := web.cookies_get(req, "session")
-	if !cok {
-		web.respond_text(res, web.S_400_BAD_REQUEST, "No session cookie.")
-		return
-	}
-
-	store.link_session_to_user(store.DB, cookie, user_id)
-	_cache_put(cookie, Session{user_id = user_id})
-
-	log.infof("web login: session linked to user {}", user_id)
+	_cache_put(new_sid, Session{user_id = user_id, session_id = new_sid})
+	log.infof("web login: created session for user {}", user_id)
 	web.respond_redirect(res, web.S_302_FOUND, "/")
 }
 
