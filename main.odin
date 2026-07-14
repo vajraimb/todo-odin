@@ -35,6 +35,7 @@ main :: proc() {
 	}
 
 	ai.init_config()
+	ai.init_stt_config()
 
 	server: web.Server
 	web.server_init(&server)
