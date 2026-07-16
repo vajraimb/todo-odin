@@ -70,23 +70,20 @@ transcribe_gemini :: proc(file_path: string) -> (string, bool) {
 
 	// Call Gemini API via curl.
 	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-	desc := os.Process_Desc{
-		command = []string{
-			"curl", "-s", "--max-time", "60",
-			"-X", "POST",
-			"-H", "Content-Type: application/json",
-			"-d", fmt.tprintf("@{}", req_path),
-			fmt.tprintf("{}?key={}", url, gemini_key),
-		},
-	}
-	state, stdout, stderr, exec_err := os.process_exec(desc, context.temp_allocator)
-	if exec_err != nil || !state.exited || state.exit_code != 0 {
-		log.errorf("STT: Gemini API failed (exit={}, stderr={})", state.exit_code, string(stderr)[:min(len(stderr), 100)])
+	state, stdout, stderr, exec_ok := exec_capture([]string{
+		"curl", "-s", "--max-time", "60",
+		"-X", "POST",
+		"-H", "Content-Type: application/json",
+		"-d", fmt.tprintf("@{}", req_path),
+		fmt.tprintf("{}?key={}", url, gemini_key),
+	})
+	if !exec_ok || !state.exited || state.exit_code != 0 {
+		log.errorf("STT: Gemini API failed (exit={}, stderr={})", state.exit_code, stderr[:min(len(stderr), 100)])
 		return "", false
 	}
 
 	// Parse response: candidates[0].content.parts[0].text
-	body := string(stdout)
+	body := stdout
 
 	// Quick JSON parse: find "text" : "..."
 	text_marker := "\"text\""
@@ -147,24 +144,21 @@ transcribe_openai :: proc(file_path: string) -> (string, bool) {
 	file_arg := fmt.tprintf("file=@{}", file_path)
 	auth := fmt.tprintf("Authorization: Bearer {}", stt_key)
 
-	desc := os.Process_Desc{
-		command = []string{
-			"curl", "-s", "--max-time", "30",
-			"-X", "POST",
-			"-H", auth,
-			"-F", file_arg,
-			"-F", fmt.tprintf("model={}", stt_model),
-			url,
-		},
-	}
-	state, stdout, _, err := os.process_exec(desc, context.temp_allocator)
-	if err != nil || !state.exited || state.exit_code != 0 {
+	state, stdout, _, exec_ok := exec_capture([]string{
+		"curl", "-s", "--max-time", "30",
+		"-X", "POST",
+		"-H", auth,
+		"-F", file_arg,
+		"-F", fmt.tprintf("model={}", stt_model),
+		url,
+	})
+	if !exec_ok || !state.exited || state.exit_code != 0 {
 		log.errorf("STT: curl failed for %s", file_path)
 		return "", false
 	}
 
 	resp: STT_Response
-	if err := json.unmarshal_string(string(stdout), &resp); err != nil {
+	if err := json.unmarshal_string(stdout, &resp); err != nil {
 		log.errorf("STT: parse failed: %v", err)
 		return "", false
 	}

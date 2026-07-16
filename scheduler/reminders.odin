@@ -7,6 +7,7 @@ import "core:strings"
 import "core:thread"
 import "core:time"
 
+import "../ai"
 import "../store"
 import "../tg"
 
@@ -109,23 +110,20 @@ _call_webhook :: proc(url: string, title: string, remind_at: i64) -> bool {
 		remind_at,
 	)
 
-	desc := os.Process_Desc{
-		command = []string{
-			"curl", "-s", "-X", "POST",
-			"-H", "Content-Type: application/json",
-			"-d", body,
-			"-o", "/dev/null",  // discard response
-			"-w", "%{http_code}",  // output HTTP status code
-			url,
-		},
-	}
-	state, stdout, _, err := os.process_exec(desc, context.temp_allocator)
-	if err != nil || !state.exited {
+	state, stdout, _, exec_ok := ai.exec_capture([]string{
+		"curl", "-s", "-X", "POST",
+		"-H", "Content-Type: application/json",
+		"-d", body,
+		"-o", "/dev/null",  // discard response
+		"-w", "%{http_code}",  // output HTTP status code
+		url,
+	})
+	if !exec_ok || !state.exited {
 		return false
 	}
 
 	// Check HTTP status code (2xx = success).
-	status_str := strings.trim_space(string(stdout))
+	status_str := strings.trim_space(stdout)
 	status, ok := _parse_int(status_str)
 	if !ok do return false
 	return status >= 200 && status < 300

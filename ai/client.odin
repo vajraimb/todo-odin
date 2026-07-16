@@ -51,29 +51,23 @@ init_config :: proc() {
 // Returns the response body.
 http_post_json_auth :: proc(url: string, json_body: string) -> (string, bool) {
 	auth_header := fmt.tprintf("Authorization: Bearer {}", API_KEY)
-	desc := os.Process_Desc{
-		command = []string{
-			"curl", "-s", "-X", "POST",
-			"-H", "Content-Type: application/json",
-			"-H", auth_header,
-			"-d", json_body,
-			url,
-		},
-	}
-	state, stdout, _, err := os.process_exec(desc, context.temp_allocator)
-	if err != nil || !state.exited || state.exit_code != 0 {
+	state, stdout, _, ok := exec_capture([]string{
+		"curl", "-s", "-X", "POST",
+		"-H", "Content-Type: application/json",
+		"-H", auth_header,
+		"-d", json_body,
+		url,
+	})
+	if !ok || !state.exited || state.exit_code != 0 {
 		return "", false
 	}
-	return string(stdout), true
+	return stdout, true
 }
 
 // http_download downloads a URL to a file. Returns true on success.
 http_download :: proc(url: string, file_path: string) -> bool {
-	desc := os.Process_Desc{
-		command = []string{"curl", "-s", "-o", file_path, url},
-	}
-	state, _, _, err := os.process_exec(desc, context.temp_allocator)
-	if err != nil || !state.exited || state.exit_code != 0 {
+	state, _, _, ok := exec_capture([]string{"curl", "-s", "-o", file_path, url})
+	if !ok || !state.exited || state.exit_code != 0 {
 		return false
 	}
 	return true
@@ -99,12 +93,11 @@ http_upload_file :: proc(url: string, file_path: string, form_fields: []string) 
 	}
 	append(&args, url)
 
-	desc := os.Process_Desc{command = args[:]}
-	state, stdout, _, err := os.process_exec(desc, context.temp_allocator)
-	if err != nil || !state.exited || state.exit_code != 0 {
+	state, stdout, _, ok := exec_capture(args[:])
+	if !ok || !state.exited || state.exit_code != 0 {
 		return "", false
 	}
-	return string(stdout), true
+	return stdout, true
 }
 
 // json_escape_string escapes a string for JSON value inclusion.

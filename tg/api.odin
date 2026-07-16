@@ -6,6 +6,8 @@ import "core:log"
 import "core:os"
 import "core:strings"
 
+import "../ai"
+
 // TG_API_BASE is the Telegram Bot API base URL.
 TG_API_BASE :: "https://api.telegram.org/bot"
 
@@ -82,41 +84,31 @@ TG_Send_Response :: struct {
 // http_post_json makes an HTTPS POST request with a JSON body and returns the response body.
 // Uses curl as a subprocess for TLS support (avoids linking OpenSSL directly).
 http_post_json :: proc(url: string, json_body: string) -> (string, bool) {
-	desc := os.Process_Desc{
-		command = []string{
-			"curl", "-s", "-X", "POST",
-			"-H", "Content-Type: application/json",
-			"-d", json_body,
-			url,
-		},
-	}
-	state, stdout, stderr, err := os.process_exec(desc, context.temp_allocator)
-	if err != nil {
-		log.errorf("curl exec failed: %v", err)
+	state, stdout, _, ok := ai.exec_capture([]string{
+		"curl", "-s", "-X", "POST",
+		"-H", "Content-Type: application/json",
+		"-d", json_body,
+		url,
+	})
+	if !ok {
 		return "", false
 	}
-	_ = stderr
 	if !state.exited || state.exit_code != 0 {
 		log.errorf("curl failed (exit_code={})", state.exit_code)
 		return "", false
 	}
-	return string(stdout), true
+	return stdout, true
 }
 
 http_get :: proc(url: string) -> (string, bool) {
-	desc := os.Process_Desc{
-		command = []string{"curl", "-s", url},
-	}
-	state, stdout, stderr, err := os.process_exec(desc, context.temp_allocator)
-	if err != nil {
-		log.errorf("curl exec failed: %v", err)
+	state, stdout, _, ok := ai.exec_capture([]string{"curl", "-s", url})
+	if !ok {
 		return "", false
 	}
-	_ = stderr
 	if !state.exited {
 		return "", false
 	}
-	return string(stdout), true
+	return stdout, true
 }
 
 // === Bot API methods ===
